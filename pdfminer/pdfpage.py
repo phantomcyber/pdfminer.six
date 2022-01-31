@@ -139,9 +139,11 @@ class PDFPage:
         caching: bool = True,
         check_extractable: bool = False
     ) -> Iterator["PDFPage"]:
+        # this is the key
         # Create a PDF parser object associated with the file object.
         parser = PDFParser(fp)
         # Create a PDF document object that stores the document structure.
+        # this is where things fail
         doc = PDFDocument(parser, password=password, caching=caching)
         # Check if the document allows text extraction.
         # If not, warn the user and proceed.

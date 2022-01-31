@@ -348,7 +348,7 @@ class PDFStandardSecurityHandler:
     def init_key(self) -> None:
         self.key = self.authenticate(self.password)
         if self.key is None:
-            raise PDFPasswordIncorrect
+            raise Exception('PDFPasswordIncorrect: Missing key for password: %s' % self.password)
         return
 
     def is_printable(self) -> bool:
