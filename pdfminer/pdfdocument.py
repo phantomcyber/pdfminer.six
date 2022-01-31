@@ -64,6 +64,10 @@ class PDFTextExtractionNotAllowed(PDFEncryptionError):
     pass
 
 
+class PDFPasswordIncorrect(PDFEncryptionError):
+    pass
+
+
 class PDFTextExtractionNotAllowedError(PDFTextExtractionNotAllowed):
     def __init__(self, *args: object) -> None:
         from warnings import warn
@@ -348,7 +352,7 @@ class PDFStandardSecurityHandler:
     def init_key(self) -> None:
         self.key = self.authenticate(self.password)
         if self.key is None:
-            raise Exception('PDFPasswordIncorrect: Missing key for password: %s' % self.password)
+            raise PDFPasswordIncorrect
         return
 
     def is_printable(self) -> bool:
