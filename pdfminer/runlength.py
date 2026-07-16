@@ -20,7 +20,7 @@ def rldecode(data: bytes) -> bytes:
         (2 to 128) times during decompression. A length value of 128
         denotes EOD.
     """
-    decoded = b''
+    decoded = bytearray()
     i = 0
     while i < len(data):
         length = data[i]
@@ -28,13 +28,17 @@ def rldecode(data: bytes) -> bytes:
             break
 
         if length >= 0 and length < 128:
-            for j in range(i+1, (i+1)+(length+1)):
-                decoded += bytes((data[j],))
-            i = (i+1) + (length+1)
+            end = i + length + 2
+            if end > len(data):
+                raise IndexError('RunLength literal run exceeds input')
+            decoded.extend(data[i+1:end])
+            i = end
 
         if length > 128:
+            if i + 1 >= len(data):
+                raise IndexError('RunLength repeat run exceeds input')
             run = bytes((data[i+1],))*(257-length)
-            decoded += run
+            decoded.extend(run)
             i = (i+1) + 1
 
-    return decoded
+    return bytes(decoded)

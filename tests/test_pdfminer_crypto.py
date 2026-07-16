@@ -1,7 +1,7 @@
 """Test of various compression/encoding modules (previously in doctests)
 """
 import binascii
-from nose.tools import assert_equal
+from nose.tools import assert_equal, assert_raises
 
 from pdfminer.arcfour import Arcfour
 from pdfminer.ascii85 import asciihexdecode, ascii85decode
@@ -57,3 +57,9 @@ class TestRunlength():
     def test_rldecode(self):
         assert_equal(rldecode(b'\x05123456\xfa7\x04abcde\x80junk'),
                      b'1234567777777abcde')
+
+    def test_rldecode_rejects_truncated_runs(self):
+        with assert_raises(IndexError):
+            rldecode(b'\x02ab')
+        with assert_raises(IndexError):
+            rldecode(b'\xff')

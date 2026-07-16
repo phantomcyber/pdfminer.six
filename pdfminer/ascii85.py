@@ -21,25 +21,25 @@ def ascii85decode(data: bytes) -> bytes:
 
     """
     n = b = 0
-    out = b''
+    out = bytearray()
     for i in iter(data):
         c = bytes((i,))
         if b'!' <= c and c <= b'u':
             n += 1
             b = b*85+(ord(c)-33)
             if n == 5:
-                out += struct.pack('>L', b)
+                out.extend(struct.pack('>L', b))
                 n = b = 0
         elif c == b'z':
             assert n == 0, str(n)
-            out += b'\0\0\0\0'
+            out.extend(b'\0\0\0\0')
         elif c == b'~':
             if n:
                 for _ in range(5-n):
                     b = b*85+84
-                out += struct.pack('>L', b)[:n-1]
+                out.extend(struct.pack('>L', b)[:n-1])
             break
-    return out
+    return bytes(out)
 
 
 # asciihexdecode(data)
@@ -61,11 +61,11 @@ def asciihexdecode(data: bytes) -> bytes:
         i = int(x, 16)
         return bytes((i,))
 
-    out = b''
+    out = bytearray()
     for x in hex_re.findall(data):
-        out += decode(x)
+        out.extend(decode(x))
 
     m = trail_re.search(data)
     if m:
-        out += decode(m.group(1)+b'0')
-    return out
+        out.extend(decode(m.group(1)+b'0'))
+    return bytes(out)

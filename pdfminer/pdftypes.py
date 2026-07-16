@@ -225,19 +225,19 @@ def decompress_corrupted(data):
     """
     d = zlib.decompressobj()
     f = io.BytesIO(data)
-    result_str = b''
+    result_chunks = []
     buffer = f.read(1)
     i = 0
     try:
         while buffer:
-            result_str += d.decompress(buffer)
+            result_chunks.append(d.decompress(buffer))
             buffer = f.read(1)
             i += 1
     except zlib.error:
         # Let the error propagates if we're not yet in the CRC checksum
         if i < len(data) - 3:
             logger.warning("Data-loss while decompressing corrupted data")
-    return result_str
+    return b''.join(result_chunks)
 
 
 class PDFStream(PDFObject):
