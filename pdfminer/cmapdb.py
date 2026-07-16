@@ -238,6 +238,13 @@ class CMapDB:
     @classmethod
     def _load_data(cls, name: str) -> Any:
         name = name.replace("\0", "")
+        # `name` originates from the /Encoding or /CIDSystemInfo entries of a
+        # PDF font dictionary and is therefore attacker-controlled. It must be
+        # treated as a bare CMap identifier, never as a path component, or a
+        # crafted PDF can traverse to an arbitrary *.pickle.gz on disk and get
+        # it fed to pickle.loads() below.
+        if ('/' in name) or ('\\' in name) or (os.sep in name) or ('..' in name):
+            raise CMapDB.CMapNotFound(name)
         filename = '%s.pickle.gz' % name
         log.info('loading: %r', name)
         cmap_paths = (os.environ.get('CMAP_PATH', '/usr/share/pdfminer/'),
