@@ -258,13 +258,21 @@ class PDFXRefStream(PDFBaseXRef):
         index_array = stream.get('Index', (0, size))
         if len(index_array) % 2 != 0:
             raise PDFSyntaxError('Invalid index number')
-        self.ranges.extend(cast(Iterator[Tuple[int, int]],
-                                choplist(2, index_array)))
         (self.fl1, self.fl2, self.fl3) = stream['W']
         assert (self.fl1 is not None and self.fl2 is not None
                 and self.fl3 is not None)
         self.data = stream.get_data()
         self.entlen = self.fl1+self.fl2+self.fl3
+        remaining_entries = (len(self.data) // self.entlen
+                             if self.entlen else 0)
+        for (start, declared_count) in cast(
+                Iterator[Tuple[int, int]], choplist(2, index_array)):
+            count = min(max(declared_count, 0), remaining_entries)
+            if count:
+                self.ranges.append((start, count))
+                remaining_entries -= count
+            if not remaining_entries:
+                break
         self.trailer = stream.attrs
         log.info('xref stream: objid=%s, fields=%d,%d,%d',
                  ', '.join(map(repr, self.ranges)),
@@ -275,15 +283,17 @@ class PDFXRefStream(PDFBaseXRef):
         return self.trailer
 
     def get_objids(self) -> Iterator[int]:
+        index = 0
         for (start, nobjs) in self.ranges:
             for i in range(nobjs):
                 assert self.entlen is not None
                 assert self.data is not None
-                offset = self.entlen * i
+                offset = self.entlen * index
                 ent = self.data[offset:offset+self.entlen]
                 f1 = nunpack(ent[:self.fl1], 1)
                 if f1 == 1 or f1 == 2:
                     yield start+i
+                index += 1
         return
 
     def get_pos(self, objid: int) -> Tuple[Optional[int], int, int]:
