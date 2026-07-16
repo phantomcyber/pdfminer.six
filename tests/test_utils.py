@@ -3,7 +3,18 @@ import pathlib
 
 from helpers import absolute_sample_path
 from pdfminer.layout import LTComponent
-from pdfminer.utils import open_filename, Plane, shorten_str
+from pdfminer.utils import apply_png_predictor, open_filename, Plane, shorten_str
+
+
+class TestPngPredictor:
+    def test_up_filter_uses_full_multicolor_scanline(self):
+        encoded = b'\x00\x01\x02\x03\x04\x05\x06' \
+                  b'\x02\x01\x01\x01\x01\x01\x01'
+
+        decoded = apply_png_predictor(12, 3, 2, 8, encoded)
+
+        assert_equal(decoded, b'\x01\x02\x03\x04\x05\x06'
+                              b'\x02\x03\x04\x05\x06\x07')
 
 
 class TestOpenFilename:
