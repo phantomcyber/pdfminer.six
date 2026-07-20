@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 
-import sys
-import pickle as pickle
 import codecs
+import json
+import sys
 
 
 class CMapConverter:
-
-    def __init__(self, enc2codec={}):
+    def __init__(self, enc2codec=None):
+        if enc2codec is None:
+            enc2codec = {}
         self.enc2codec = enc2codec
         self.code2cid = {}  # {'cmapname': ...}
         self.is_vertical = {}
         self.cid2unichr_h = {}  # {cid: unichr}
         self.cid2unichr_v = {}  # {cid: unichr}
-        return
 
     def get_encs(self):
         return self.code2cid.keys()
 
     def get_maps(self, enc):
-        if enc.endswith('-H'):
+        if enc.endswith("-H"):
             (hmapenc, vmapenc) = (enc, None)
-        elif enc == 'H':
-            (hmapenc, vmapenc) = ('H', 'V')
+        elif enc == "H":
+            (hmapenc, vmapenc) = ("H", "V")
         else:
-            (hmapenc, vmapenc) = (enc+'-H', enc+'-V')
+            (hmapenc, vmapenc) = (enc + "-H", enc + "-V")
         if hmapenc in self.code2cid:
             hmap = self.code2cid[hmapenc]
         else:
@@ -43,12 +43,12 @@ class CMapConverter:
     def load(self, fp):
         encs = None
         for line in fp:
-            (line, _, _) = line.strip().partition('#')
+            (line, _, _) = line.strip().partition("#")
             if not line:
                 continue
-            values = line.split('\t')
+            values = line.split("\t")
             if encs is None:
-                assert values[0] == 'CID', str(values)
+                assert values[0] == "CID", str(values)
                 encs = values
                 continue
 
@@ -63,12 +63,11 @@ class CMapConverter:
                 b = code[-1]
                 if force or ((b not in dmap) or dmap[b] == cid):
                     dmap[b] = cid
-                return
 
             def add(unimap, enc, code):
                 try:
                     codec = self.enc2codec[enc]
-                    c = code.decode(codec, 'strict')
+                    c = code.decode(codec, "strict")
                     if len(c) == 1:
                         if c not in unimap:
                             unimap[c] = 0
@@ -77,7 +76,6 @@ class CMapConverter:
                     pass
                 except UnicodeError:
                     pass
-                return
 
             def pick(unimap):
                 chars = list(unimap.items())
@@ -88,21 +86,21 @@ class CMapConverter:
             cid = int(values[0])
             unimap_h = {}
             unimap_v = {}
-            for (enc, value) in zip(encs, values):
-                if enc == 'CID':
+            for enc, value in zip(encs, values, strict=False):
+                if enc == "CID":
                     continue
-                if value == '*':
+                if value == "*":
                     continue
 
                 # hcodes, vcodes: encoded bytes for each writing mode.
                 hcodes = []
                 vcodes = []
-                for code in value.split(','):
-                    vertical = code.endswith('v')
+                for code in value.split(","):
+                    vertical = code.endswith("v")
                     if vertical:
                         code = code[:-1]
                     try:
-                        code = codecs.decode(code, 'hex_codec')
+                        code = codecs.decode(code, "hex_codec")
                     except Exception:
                         code = chr(int(code, 16))
                     if vertical:
@@ -130,23 +128,21 @@ class CMapConverter:
             if unimap_v or unimap_h:
                 self.cid2unichr_v[cid] = pick(unimap_v or unimap_h)
 
-        return
-
     def dump_cmap(self, fp, enc):
-        data = dict(
-            IS_VERTICAL=self.is_vertical.get(enc, False),
-            CODE2CID=self.code2cid.get(enc),
-        )
-        fp.write(pickle.dumps(data, 2))
-        return
+        """Dump CMap data as JSON."""
+        data = {
+            "IS_VERTICAL": self.is_vertical.get(enc, False),
+            "CODE2CID": self.code2cid.get(enc),
+        }
+        json.dump(data, fp, ensure_ascii=False, separators=(",", ":"))
 
     def dump_unicodemap(self, fp):
-        data = dict(
-            CID2UNICHR_H=self.cid2unichr_h,
-            CID2UNICHR_V=self.cid2unichr_v,
-        )
-        fp.write(pickle.dumps(data, 2))
-        return
+        """Dump Unicode map data as JSON."""
+        data = {
+            "CID2UNICHR_H": self.cid2unichr_h,
+            "CID2UNICHR_V": self.cid2unichr_v,
+        }
+        json.dump(data, fp, ensure_ascii=False, separators=(",", ":"))
 
 
 def main(argv):
@@ -155,17 +151,19 @@ def main(argv):
     import os.path
 
     def usage():
-        print('usage: %s [-c enc=codec] output_dir regname [cid2code.txt ...]'
-              % argv[0])
+        print(
+            f"usage: {argv[0]} [-c enc=codec] output_dir regname [cid2code.txt ...]",
+        )
         return 100
+
     try:
-        (opts, args) = getopt.getopt(argv[1:], 'c:')
+        (opts, args) = getopt.getopt(argv[1:], "c:")
     except getopt.GetoptError:
         return usage()
     enc2codec = {}
-    for (k, v) in opts:
-        if k == '-c':
-            (enc, _, codec) = v.partition('=')
+    for k, v in opts:
+        if k == "-c":
+            (enc, _, codec) = v.partition("=")
             enc2codec[enc] = codec
     if not args:
         return usage()
@@ -176,27 +174,25 @@ def main(argv):
 
     converter = CMapConverter(enc2codec)
     for path in args:
-        print('reading: %r...' % path)
-        fp = open(path)
-        converter.load(fp)
-        fp.close()
+        print(f"reading: {path!r}...")
+        with open(path) as fp:
+            converter.load(fp)
 
     for enc in converter.get_encs():
-        fname = '%s.pickle.gz' % enc
+        # Write JSON format
+        fname = f"{enc}.json.gz"
         path = os.path.join(outdir, fname)
-        print('writing: %r...' % path)
-        fp = gzip.open(path, 'wb')
-        converter.dump_cmap(fp, enc)
-        fp.close()
+        print(f"writing: {path!r}...")
+        with gzip.open(path, "wt", encoding="utf-8") as fp:
+            converter.dump_cmap(fp, enc)
 
-    fname = 'to-unicode-%s.pickle.gz' % regname
+    # Write JSON format
+    fname = f"to-unicode-{regname}.json.gz"
     path = os.path.join(outdir, fname)
-    print('writing: %r...' % path)
-    fp = gzip.open(path, 'wb')
-    converter.dump_unicodemap(fp)
-    fp.close()
-    return
+    print(f"writing: {path!r}...")
+    with gzip.open(path, "wt", encoding="utf-8") as fp:
+        converter.dump_unicodemap(fp)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main(sys.argv))  # type: ignore[no-untyped-call]

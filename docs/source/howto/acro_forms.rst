@@ -1,7 +1,7 @@
 .. _acro_forms:
 
 How to extract AcroForm interactive form fields from a PDF using PDFMiner
-********************************
+*************************************************************************
 
 Before you start, make sure you have :ref:`installed pdfminer.six<install>`.
 
@@ -15,12 +15,12 @@ Only AcroForm interactive forms are supported, XFA forms are not supported.
     from pdfminer.pdfdocument import PDFDocument
     from pdfminer.pdftypes import resolve1
     from pdfminer.psparser import PSLiteral, PSKeyword
-    from pdfminer.utils import decode_text    
-    
-    
+    from pdfminer.utils import decode_text
+
+
     data = {}
- 
- 
+
+
     def decode_value(value):
 
         # decode PSLiteral, PSKeyword
@@ -36,13 +36,13 @@ Only AcroForm interactive forms are supported, XFA forms are not supported.
 
     with open(file_path, 'rb') as fp:
         parser = PDFParser(fp)
-        
+
         doc = PDFDocument(parser)
         res = resolve1(doc.catalog)
 
         if 'AcroForm' not in res:
             raise ValueError("No AcroForm Found")
-            
+
         fields = resolve1(doc.catalog['AcroForm'])['Fields']  # may need further resolving
 
         for f in fields:
@@ -54,18 +54,18 @@ Only AcroForm interactive forms are supported, XFA forms are not supported.
 
             # resolve indirect obj
             values = resolve1(values)
-            
+
             # decode value(s)
             if isinstance(values, list):
                 values = [decode_value(v) for v in values]
             else:
                 values = decode_value(values)
 
-            data.update({name: values})    
-              
+            data.update({name: values})
+
             print(name, values)
 
-This code snippet will print all the fields name and value and save them in the "data" dictionary.
+This code snippet will print all the fields' names and values and save them in the "data" dictionary.
 
 
 How it works:
@@ -77,15 +77,17 @@ How it works:
     parser = PDFParser(fp)
     doc = PDFDocument(parser)
 
-- Get the catalog
-(the catalog contains references to other objects defining the document structure, see section 7.7.2 of PDF 32000-1:2008 specs: https://www.adobe.com/devnet/pdf/pdf_reference.html)
+- Get the Catalog
+
+  (the catalog contains references to other objects defining the document structure, see section 7.7.2 of PDF 32000-1:2008 specs: https://opensource.adobe.com/dc-acrobat-sdk-docs/pdflsdk/index.html#pdf-reference)
 
 .. code-block:: python
 
     res = resolve1(doc.catalog)
 
-- Check if the catalog contains the AcroForm key and raise ValueError if not 
-(the PDF does not contain Acroform type of interactive forms if this key is missing in the catalog, see section 12.7.2 of PDF 32000-1:2008 specs)
+- Check if the catalog contains the AcroForm key and raise ValueError if not
+
+  (the PDF does not contain Acroform type of interactive forms if this key is missing in the catalog, see section 12.7.2 of PDF 32000-1:2008 specs)
 
 .. code-block:: python
 
@@ -119,7 +121,8 @@ How it works:
     values = resolve1(value)
 
 - Call the value(s) decoding method as needed
-(a single field can hold multiple values, for example a combo box can hold more than one value at time)
+
+  (a single field can hold multiple values, for example, a combo box can hold more than one value at a time)
 
 .. code-block:: python
 
@@ -127,8 +130,8 @@ How it works:
         values = [decode_value(v) for v in values]
     else:
         values = decode_value(values)
-        
-(the decode_value method takes care of decoding the fields value returning a string)
+
+(the decode_value method takes care of decoding the field's value, returning a string)
 
 - Decode PSLiteral and PSKeyword field values
 

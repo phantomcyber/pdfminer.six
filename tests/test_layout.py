@@ -1,18 +1,21 @@
 import unittest
 
+from pdfminer.high_level import extract_pages
 from pdfminer.layout import (
-    LTLayoutContainer,
     LAParams,
+    LTLayoutContainer,
+    LTTextBoxHorizontal,
+    LTTextBoxVertical,
     LTTextLineHorizontal,
     LTTextLineVertical,
 )
 from pdfminer.utils import Plane
+from tests.helpers import absolute_sample_path
 
 
 class TestGroupTextLines(unittest.TestCase):
     def test_parent_with_wrong_bbox_returns_non_empty_neighbour_list(self):
-        """
-        LTLayoutContainer.group_textlines() should return all the lines in a
+        """LTLayoutContainer.group_textlines() should return all the lines in a
         separate LTTextBoxes if they do not overlap. Even when the bounding box
         of the parent container does not contain all the lines.
         """
@@ -46,8 +49,7 @@ class TestFindNeigbors(unittest.TestCase):
         right_aligned_below.set_bbox((15, 2, 20, 4))
         plane.add(right_aligned_below)
 
-        centrally_aligned_overlapping = LTTextLineHorizontal(
-            laparams.word_margin)
+        centrally_aligned_overlapping = LTTextLineHorizontal(laparams.word_margin)
         centrally_aligned_overlapping.set_bbox((13, 5, 17, 7))
         plane.add(centrally_aligned_overlapping)
 
@@ -86,8 +88,7 @@ class TestFindNeigbors(unittest.TestCase):
         top_aligned_left.set_bbox((2, 15, 4, 20))
         plane.add(top_aligned_left)
 
-        centrally_aligned_overlapping = LTTextLineVertical(
-            laparams.word_margin)
+        centrally_aligned_overlapping = LTTextLineVertical(laparams.word_margin)
         centrally_aligned_overlapping.set_bbox((5, 13, 7, 17))
         plane.add(centrally_aligned_overlapping)
 
@@ -109,3 +110,38 @@ class TestFindNeigbors(unittest.TestCase):
                 centrally_aligned_overlapping,
             ],
         )
+
+
+def test_pdf_with_empty_characters_horizontal():
+    """Regression test for issue #449
+
+    See: https://github.com/pdfminer/pdfminer.six/pull/689
+
+    The page aggregator should separate the 3 horizontal lines in the
+    sample PDF. The used PDF sample has multiple explicit space characters
+    in between lines with text.
+    """
+    path = absolute_sample_path("contrib/issue-449-horizontal.pdf")
+    pages = extract_pages(path)
+    textboxes = [
+        textbox for textbox in next(pages) if isinstance(textbox, LTTextBoxHorizontal)
+    ]
+    assert len(textboxes) == 3
+
+
+def test_pdf_with_empty_characters_vertical():
+    """Regression test for issue #449
+
+    See: https://github.com/pdfminer/pdfminer.six/pull/689
+
+    The page aggregator should separate the 3 horizontal lines in the
+    sample PDF. The used PDF sample has multiple explicit space characters
+    in between lines with text.
+    """
+    path = absolute_sample_path("contrib/issue-449-vertical.pdf")
+    laparams = LAParams(detect_vertical=True)
+    pages = extract_pages(path, laparams=laparams)
+    textboxes = [
+        textbox for textbox in next(pages) if isinstance(textbox, LTTextBoxVertical)
+    ]
+    assert len(textboxes) == 3

@@ -1,78 +1,101 @@
+import contextlib
 import logging
 import struct
-import sys
+from collections.abc import Iterable, Iterator, Mapping
 from io import BytesIO
-from typing import (Any, BinaryIO, Dict, Iterable, Iterator, List, Mapping,
-                    Optional, Tuple, Union, cast, TYPE_CHECKING)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    BinaryIO,
+    cast,
+)
 
-from . import settings
-from .cmapdb import CMap
-from .cmapdb import IdentityUnicodeMap
-from .cmapdb import CMapBase
-from .cmapdb import CMapDB
-from .cmapdb import CMapParser
-from .cmapdb import UnicodeMap
-from .cmapdb import FileUnicodeMap
-from .encodingdb import EncodingDB
-from .encodingdb import name2unicode
-from .fontmetrics import FONT_METRICS
-from .pdftypes import PDFException
-from .pdftypes import PDFStream
-from .pdftypes import dict_value
-from .pdftypes import int_value
-from .pdftypes import list_value
-from .pdftypes import num_value
-from .pdftypes import resolve1, resolve_all
-from .pdftypes import stream_value
-from .psparser import KWD
-from .psparser import LIT
-from .psparser import PSEOF
-from .psparser import PSKeyword
-from .psparser import PSLiteral
-from .psparser import PSStackParser
-from .psparser import literal_name
-from .utils import Matrix, Point
-from .utils import Rect
-from .utils import apply_matrix_norm
-from .utils import choplist
-from .utils import nunpack
+from pdfminer import settings
+from pdfminer.casting import safe_float, safe_rect_list
+from pdfminer.cmapdb import (
+    CMap,
+    CMapBase,
+    CMapDB,
+    CMapParser,
+    FileUnicodeMap,
+    IdentityUnicodeMap,
+    UnicodeMap,
+)
+from pdfminer.encodingdb import EncodingDB, name2unicode
+from pdfminer.fontmetrics import FONT_METRICS
+from pdfminer.pdfexceptions import PDFException, PDFKeyError, PDFValueError
+from pdfminer.pdftypes import (
+    PDFStream,
+    dict_value,
+    int_value,
+    list_value,
+    num_value,
+    resolve1,
+    resolve_all,
+    stream_value,
+)
+from pdfminer.psexceptions import PSEOF
+from pdfminer.psparser import (
+    KWD,
+    LIT,
+    PSKeyword,
+    PSLiteral,
+    PSStackParser,
+    literal_name,
+)
+from pdfminer.utils import Matrix, Point, Rect, apply_matrix_norm, choplist, nunpack
 
 if TYPE_CHECKING:
-    from .pdfinterp import PDFResourceManager
+    from pdfminer.pdfinterp import PDFResourceManager
 
 log = logging.getLogger(__name__)
 
 
-def get_widths(seq: Iterable[object]) -> Dict[int, float]:
+def get_widths(seq: Iterable[object]) -> dict[str | int, float]:
     """Build a mapping of character widths for horizontal writing."""
-    widths: Dict[int, float] = {}
-    r: List[float] = []
+    widths: dict[int, float] = {}
+    r: list[float] = []
     for v in seq:
+        v = resolve1(v)
         if isinstance(v, list):
             if r:
                 char1 = r[-1]
-                for (i, w) in enumerate(v):
+                for i, w in enumerate(v):
                     widths[cast(int, char1) + i] = w
                 r = []
         elif isinstance(v, (int, float)):  # == utils.isnumber(v)
             r.append(v)
             if len(r) == 3:
                 (char1, char2, w) = r
-                for i in range(cast(int, char1), cast(int, char2) + 1):
-                    widths[i] = w
+                if isinstance(char1, int) and isinstance(char2, int):
+                    for i in range(char1, char2 + 1):
+                        widths[i] = w
+                else:
+                    log.warning(
+                        "Skipping invalid font width specification for %s to "
+                        "%s because either of them is not an int",
+                        char1,
+                        char2,
+                    )
                 r = []
-    return widths
+        else:
+            log.warning(
+                "Skipping invalid font width specification for %s "
+                "because it is not a number or a list",
+                v,
+            )
+    return cast(dict[str | int, float], widths)
 
 
-def get_widths2(seq: Iterable[object]) -> Dict[int, Tuple[float, Point]]:
+def get_widths2(seq: Iterable[object]) -> dict[int, tuple[float, Point]]:
     """Build a mapping of character widths for vertical writing."""
-    widths: Dict[int, Tuple[float, Point]] = {}
-    r: List[float] = []
+    widths: dict[int, tuple[float, Point]] = {}
+    r: list[float] = []
     for v in seq:
         if isinstance(v, list):
             if r:
                 char1 = r[-1]
-                for (i, (w, vx, vy)) in enumerate(choplist(3, v)):
+                for i, (w, vx, vy) in enumerate(choplist(3, v)):
                     widths[cast(int, char1) + i] = (w, (vx, vy))
                 r = []
         elif isinstance(v, (int, float)):  # == utils.isnumber(v)
@@ -86,31 +109,27 @@ def get_widths2(seq: Iterable[object]) -> Dict[int, Tuple[float, Point]]:
 
 
 class FontMetricsDB:
-
     @classmethod
-    def get_metrics(cls, fontname: str
-                    ) -> Tuple[Dict[str, object], Dict[str, int]]:
+    def get_metrics(cls, fontname: str) -> tuple[dict[str, object], dict[str, int]]:
         return FONT_METRICS[fontname]
 
 
 # int here means that we're not extending PSStackParser with additional types.
 class Type1FontHeaderParser(PSStackParser[int]):
-
-    KEYWORD_BEGIN = KWD(b'begin')
-    KEYWORD_END = KWD(b'end')
-    KEYWORD_DEF = KWD(b'def')
-    KEYWORD_PUT = KWD(b'put')
-    KEYWORD_DICT = KWD(b'dict')
-    KEYWORD_ARRAY = KWD(b'array')
-    KEYWORD_READONLY = KWD(b'readonly')
-    KEYWORD_FOR = KWD(b'for')
+    KEYWORD_BEGIN = KWD(b"begin")
+    KEYWORD_END = KWD(b"end")
+    KEYWORD_DEF = KWD(b"def")
+    KEYWORD_PUT = KWD(b"put")
+    KEYWORD_DICT = KWD(b"dict")
+    KEYWORD_ARRAY = KWD(b"array")
+    KEYWORD_READONLY = KWD(b"readonly")
+    KEYWORD_FOR = KWD(b"for")
 
     def __init__(self, data: BinaryIO) -> None:
         PSStackParser.__init__(self, data)
-        self._cid2unicode: Dict[int, str] = {}
-        return
+        self._cid2unicode: dict[int, str] = {}
 
-    def get_encoding(self) -> Dict[int, str]:
+    def get_encoding(self) -> dict[int, str]:
         """Parse the font encoding.
 
         The Type1 font encoding maps character codes to character names. These
@@ -138,26 +157,24 @@ class Type1FontHeaderParser(PSStackParser[int]):
     def do_keyword(self, pos: int, token: PSKeyword) -> None:
         if token is self.KEYWORD_PUT:
             ((_, key), (_, value)) = self.pop(2)
-            if (isinstance(key, int) and isinstance(value, PSLiteral)):
+            if isinstance(key, int) and isinstance(value, PSLiteral):
                 self.add_results((key, literal_name(value)))
-        return
 
 
-NIBBLES = ('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', 'e', 'e-',
-           None, '-')
+NIBBLES = ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "e", "e-", None, "-")
 
 # Mapping of cmap names. Original cmap name is kept if not in the mapping.
 # (missing reference for why DLIdent is mapped to Identity)
 IDENTITY_ENCODER = {
-    'DLIdent-H': 'Identity-H',
-    'DLIdent-V': 'Identity-V',
+    "DLIdent-H": "Identity-H",
+    "DLIdent-V": "Identity-V",
 }
 
 
-def getdict(data: bytes) -> Dict[int, List[Union[float, int]]]:
-    d: Dict[int, List[Union[float, int]]] = {}
+def getdict(data: bytes) -> dict[int, list[float | int]]:
+    d: dict[int, list[float | int]] = {}
     fp = BytesIO(data)
-    stack: List[Union[float, int]] = []
+    stack: list[float | int] = []
     while 1:
         c = fp.read(1)
         if not c:
@@ -168,7 +185,7 @@ def getdict(data: bytes) -> Dict[int, List[Union[float, int]]]:
             stack = []
             continue
         if b0 == 30:
-            s = ''
+            s = ""
             loop = True
             while loop:
                 b = ord(fp.read(1))
@@ -180,131 +197,440 @@ def getdict(data: bytes) -> Dict[int, List[Union[float, int]]]:
                         assert nibble is not None
                         s += nibble
             value = float(s)
-        elif 32 <= b0 and b0 <= 246:
-            value = b0-139
+        elif b0 >= 32 and b0 <= 246:
+            value = b0 - 139
         else:
             b1 = ord(fp.read(1))
-            if 247 <= b0 and b0 <= 250:
-                value = ((b0-247) << 8)+b1+108
-            elif 251 <= b0 and b0 <= 254:
-                value = -((b0-251) << 8)-b1-108
+            if b0 >= 247 and b0 <= 250:
+                value = ((b0 - 247) << 8) + b1 + 108
+            elif b0 >= 251 and b0 <= 254:
+                value = -((b0 - 251) << 8) - b1 - 108
             else:
                 b2 = ord(fp.read(1))
-                if 128 <= b1:
+                if b1 >= 128:
                     b1 -= 256
                 if b0 == 28:
                     value = b1 << 8 | b2
                 else:
-                    value = b1 << 24 | b2 << 16 | \
-                            struct.unpack('>H', fp.read(2))[0]
+                    value = b1 << 24 | b2 << 16 | struct.unpack(">H", fp.read(2))[0]
         stack.append(value)
     return d
 
 
 class CFFFont:
-
     STANDARD_STRINGS = (
-      '.notdef', 'space', 'exclam', 'quotedbl', 'numbersign',
-      'dollar', 'percent', 'ampersand', 'quoteright', 'parenleft',
-      'parenright', 'asterisk', 'plus', 'comma', 'hyphen', 'period',
-      'slash', 'zero', 'one', 'two', 'three', 'four', 'five', 'six',
-      'seven', 'eight', 'nine', 'colon', 'semicolon', 'less', 'equal',
-      'greater', 'question', 'at', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
-      'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
-      'U', 'V', 'W', 'X', 'Y', 'Z', 'bracketleft', 'backslash',
-      'bracketright', 'asciicircum', 'underscore', 'quoteleft', 'a',
-      'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
-      'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-      'braceleft', 'bar', 'braceright', 'asciitilde', 'exclamdown',
-      'cent', 'sterling', 'fraction', 'yen', 'florin', 'section',
-      'currency', 'quotesingle', 'quotedblleft', 'guillemotleft',
-      'guilsinglleft', 'guilsinglright', 'fi', 'fl', 'endash',
-      'dagger', 'daggerdbl', 'periodcentered', 'paragraph', 'bullet',
-      'quotesinglbase', 'quotedblbase', 'quotedblright',
-      'guillemotright', 'ellipsis', 'perthousand', 'questiondown',
-      'grave', 'acute', 'circumflex', 'tilde', 'macron', 'breve',
-      'dotaccent', 'dieresis', 'ring', 'cedilla', 'hungarumlaut',
-      'ogonek', 'caron', 'emdash', 'AE', 'ordfeminine', 'Lslash',
-      'Oslash', 'OE', 'ordmasculine', 'ae', 'dotlessi', 'lslash',
-      'oslash', 'oe', 'germandbls', 'onesuperior', 'logicalnot', 'mu',
-      'trademark', 'Eth', 'onehalf', 'plusminus', 'Thorn',
-      'onequarter', 'divide', 'brokenbar', 'degree', 'thorn',
-      'threequarters', 'twosuperior', 'registered', 'minus', 'eth',
-      'multiply', 'threesuperior', 'copyright', 'Aacute',
-      'Acircumflex', 'Adieresis', 'Agrave', 'Aring', 'Atilde',
-      'Ccedilla', 'Eacute', 'Ecircumflex', 'Edieresis', 'Egrave',
-      'Iacute', 'Icircumflex', 'Idieresis', 'Igrave', 'Ntilde',
-      'Oacute', 'Ocircumflex', 'Odieresis', 'Ograve', 'Otilde',
-      'Scaron', 'Uacute', 'Ucircumflex', 'Udieresis', 'Ugrave',
-      'Yacute', 'Ydieresis', 'Zcaron', 'aacute', 'acircumflex',
-      'adieresis', 'agrave', 'aring', 'atilde', 'ccedilla', 'eacute',
-      'ecircumflex', 'edieresis', 'egrave', 'iacute', 'icircumflex',
-      'idieresis', 'igrave', 'ntilde', 'oacute', 'ocircumflex',
-      'odieresis', 'ograve', 'otilde', 'scaron', 'uacute',
-      'ucircumflex', 'udieresis', 'ugrave', 'yacute', 'ydieresis',
-      'zcaron', 'exclamsmall', 'Hungarumlautsmall', 'dollaroldstyle',
-      'dollarsuperior', 'ampersandsmall', 'Acutesmall',
-      'parenleftsuperior', 'parenrightsuperior', 'twodotenleader',
-      'onedotenleader', 'zerooldstyle', 'oneoldstyle', 'twooldstyle',
-      'threeoldstyle', 'fouroldstyle', 'fiveoldstyle', 'sixoldstyle',
-      'sevenoldstyle', 'eightoldstyle', 'nineoldstyle',
-      'commasuperior', 'threequartersemdash', 'periodsuperior',
-      'questionsmall', 'asuperior', 'bsuperior', 'centsuperior',
-      'dsuperior', 'esuperior', 'isuperior', 'lsuperior', 'msuperior',
-      'nsuperior', 'osuperior', 'rsuperior', 'ssuperior', 'tsuperior',
-      'ff', 'ffi', 'ffl', 'parenleftinferior', 'parenrightinferior',
-      'Circumflexsmall', 'hyphensuperior', 'Gravesmall', 'Asmall',
-      'Bsmall', 'Csmall', 'Dsmall', 'Esmall', 'Fsmall', 'Gsmall',
-      'Hsmall', 'Ismall', 'Jsmall', 'Ksmall', 'Lsmall', 'Msmall',
-      'Nsmall', 'Osmall', 'Psmall', 'Qsmall', 'Rsmall', 'Ssmall',
-      'Tsmall', 'Usmall', 'Vsmall', 'Wsmall', 'Xsmall', 'Ysmall',
-      'Zsmall', 'colonmonetary', 'onefitted', 'rupiah', 'Tildesmall',
-      'exclamdownsmall', 'centoldstyle', 'Lslashsmall', 'Scaronsmall',
-      'Zcaronsmall', 'Dieresissmall', 'Brevesmall', 'Caronsmall',
-      'Dotaccentsmall', 'Macronsmall', 'figuredash', 'hypheninferior',
-      'Ogoneksmall', 'Ringsmall', 'Cedillasmall', 'questiondownsmall',
-      'oneeighth', 'threeeighths', 'fiveeighths', 'seveneighths',
-      'onethird', 'twothirds', 'zerosuperior', 'foursuperior',
-      'fivesuperior', 'sixsuperior', 'sevensuperior', 'eightsuperior',
-      'ninesuperior', 'zeroinferior', 'oneinferior', 'twoinferior',
-      'threeinferior', 'fourinferior', 'fiveinferior', 'sixinferior',
-      'seveninferior', 'eightinferior', 'nineinferior',
-      'centinferior', 'dollarinferior', 'periodinferior',
-      'commainferior', 'Agravesmall', 'Aacutesmall',
-      'Acircumflexsmall', 'Atildesmall', 'Adieresissmall',
-      'Aringsmall', 'AEsmall', 'Ccedillasmall', 'Egravesmall',
-      'Eacutesmall', 'Ecircumflexsmall', 'Edieresissmall',
-      'Igravesmall', 'Iacutesmall', 'Icircumflexsmall',
-      'Idieresissmall', 'Ethsmall', 'Ntildesmall', 'Ogravesmall',
-      'Oacutesmall', 'Ocircumflexsmall', 'Otildesmall',
-      'Odieresissmall', 'OEsmall', 'Oslashsmall', 'Ugravesmall',
-      'Uacutesmall', 'Ucircumflexsmall', 'Udieresissmall',
-      'Yacutesmall', 'Thornsmall', 'Ydieresissmall', '001.000',
-      '001.001', '001.002', '001.003', 'Black', 'Bold', 'Book',
-      'Light', 'Medium', 'Regular', 'Roman', 'Semibold',
+        ".notdef",
+        "space",
+        "exclam",
+        "quotedbl",
+        "numbersign",
+        "dollar",
+        "percent",
+        "ampersand",
+        "quoteright",
+        "parenleft",
+        "parenright",
+        "asterisk",
+        "plus",
+        "comma",
+        "hyphen",
+        "period",
+        "slash",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "colon",
+        "semicolon",
+        "less",
+        "equal",
+        "greater",
+        "question",
+        "at",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O",
+        "P",
+        "Q",
+        "R",
+        "S",
+        "T",
+        "U",
+        "V",
+        "W",
+        "X",
+        "Y",
+        "Z",
+        "bracketleft",
+        "backslash",
+        "bracketright",
+        "asciicircum",
+        "underscore",
+        "quoteleft",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "i",
+        "j",
+        "k",
+        "l",
+        "m",
+        "n",
+        "o",
+        "p",
+        "q",
+        "r",
+        "s",
+        "t",
+        "u",
+        "v",
+        "w",
+        "x",
+        "y",
+        "z",
+        "braceleft",
+        "bar",
+        "braceright",
+        "asciitilde",
+        "exclamdown",
+        "cent",
+        "sterling",
+        "fraction",
+        "yen",
+        "florin",
+        "section",
+        "currency",
+        "quotesingle",
+        "quotedblleft",
+        "guillemotleft",
+        "guilsinglleft",
+        "guilsinglright",
+        "fi",
+        "fl",
+        "endash",
+        "dagger",
+        "daggerdbl",
+        "periodcentered",
+        "paragraph",
+        "bullet",
+        "quotesinglbase",
+        "quotedblbase",
+        "quotedblright",
+        "guillemotright",
+        "ellipsis",
+        "perthousand",
+        "questiondown",
+        "grave",
+        "acute",
+        "circumflex",
+        "tilde",
+        "macron",
+        "breve",
+        "dotaccent",
+        "dieresis",
+        "ring",
+        "cedilla",
+        "hungarumlaut",
+        "ogonek",
+        "caron",
+        "emdash",
+        "AE",
+        "ordfeminine",
+        "Lslash",
+        "Oslash",
+        "OE",
+        "ordmasculine",
+        "ae",
+        "dotlessi",
+        "lslash",
+        "oslash",
+        "oe",
+        "germandbls",
+        "onesuperior",
+        "logicalnot",
+        "mu",
+        "trademark",
+        "Eth",
+        "onehalf",
+        "plusminus",
+        "Thorn",
+        "onequarter",
+        "divide",
+        "brokenbar",
+        "degree",
+        "thorn",
+        "threequarters",
+        "twosuperior",
+        "registered",
+        "minus",
+        "eth",
+        "multiply",
+        "threesuperior",
+        "copyright",
+        "Aacute",
+        "Acircumflex",
+        "Adieresis",
+        "Agrave",
+        "Aring",
+        "Atilde",
+        "Ccedilla",
+        "Eacute",
+        "Ecircumflex",
+        "Edieresis",
+        "Egrave",
+        "Iacute",
+        "Icircumflex",
+        "Idieresis",
+        "Igrave",
+        "Ntilde",
+        "Oacute",
+        "Ocircumflex",
+        "Odieresis",
+        "Ograve",
+        "Otilde",
+        "Scaron",
+        "Uacute",
+        "Ucircumflex",
+        "Udieresis",
+        "Ugrave",
+        "Yacute",
+        "Ydieresis",
+        "Zcaron",
+        "aacute",
+        "acircumflex",
+        "adieresis",
+        "agrave",
+        "aring",
+        "atilde",
+        "ccedilla",
+        "eacute",
+        "ecircumflex",
+        "edieresis",
+        "egrave",
+        "iacute",
+        "icircumflex",
+        "idieresis",
+        "igrave",
+        "ntilde",
+        "oacute",
+        "ocircumflex",
+        "odieresis",
+        "ograve",
+        "otilde",
+        "scaron",
+        "uacute",
+        "ucircumflex",
+        "udieresis",
+        "ugrave",
+        "yacute",
+        "ydieresis",
+        "zcaron",
+        "exclamsmall",
+        "Hungarumlautsmall",
+        "dollaroldstyle",
+        "dollarsuperior",
+        "ampersandsmall",
+        "Acutesmall",
+        "parenleftsuperior",
+        "parenrightsuperior",
+        "twodotenleader",
+        "onedotenleader",
+        "zerooldstyle",
+        "oneoldstyle",
+        "twooldstyle",
+        "threeoldstyle",
+        "fouroldstyle",
+        "fiveoldstyle",
+        "sixoldstyle",
+        "sevenoldstyle",
+        "eightoldstyle",
+        "nineoldstyle",
+        "commasuperior",
+        "threequartersemdash",
+        "periodsuperior",
+        "questionsmall",
+        "asuperior",
+        "bsuperior",
+        "centsuperior",
+        "dsuperior",
+        "esuperior",
+        "isuperior",
+        "lsuperior",
+        "msuperior",
+        "nsuperior",
+        "osuperior",
+        "rsuperior",
+        "ssuperior",
+        "tsuperior",
+        "ff",
+        "ffi",
+        "ffl",
+        "parenleftinferior",
+        "parenrightinferior",
+        "Circumflexsmall",
+        "hyphensuperior",
+        "Gravesmall",
+        "Asmall",
+        "Bsmall",
+        "Csmall",
+        "Dsmall",
+        "Esmall",
+        "Fsmall",
+        "Gsmall",
+        "Hsmall",
+        "Ismall",
+        "Jsmall",
+        "Ksmall",
+        "Lsmall",
+        "Msmall",
+        "Nsmall",
+        "Osmall",
+        "Psmall",
+        "Qsmall",
+        "Rsmall",
+        "Ssmall",
+        "Tsmall",
+        "Usmall",
+        "Vsmall",
+        "Wsmall",
+        "Xsmall",
+        "Ysmall",
+        "Zsmall",
+        "colonmonetary",
+        "onefitted",
+        "rupiah",
+        "Tildesmall",
+        "exclamdownsmall",
+        "centoldstyle",
+        "Lslashsmall",
+        "Scaronsmall",
+        "Zcaronsmall",
+        "Dieresissmall",
+        "Brevesmall",
+        "Caronsmall",
+        "Dotaccentsmall",
+        "Macronsmall",
+        "figuredash",
+        "hypheninferior",
+        "Ogoneksmall",
+        "Ringsmall",
+        "Cedillasmall",
+        "questiondownsmall",
+        "oneeighth",
+        "threeeighths",
+        "fiveeighths",
+        "seveneighths",
+        "onethird",
+        "twothirds",
+        "zerosuperior",
+        "foursuperior",
+        "fivesuperior",
+        "sixsuperior",
+        "sevensuperior",
+        "eightsuperior",
+        "ninesuperior",
+        "zeroinferior",
+        "oneinferior",
+        "twoinferior",
+        "threeinferior",
+        "fourinferior",
+        "fiveinferior",
+        "sixinferior",
+        "seveninferior",
+        "eightinferior",
+        "nineinferior",
+        "centinferior",
+        "dollarinferior",
+        "periodinferior",
+        "commainferior",
+        "Agravesmall",
+        "Aacutesmall",
+        "Acircumflexsmall",
+        "Atildesmall",
+        "Adieresissmall",
+        "Aringsmall",
+        "AEsmall",
+        "Ccedillasmall",
+        "Egravesmall",
+        "Eacutesmall",
+        "Ecircumflexsmall",
+        "Edieresissmall",
+        "Igravesmall",
+        "Iacutesmall",
+        "Icircumflexsmall",
+        "Idieresissmall",
+        "Ethsmall",
+        "Ntildesmall",
+        "Ogravesmall",
+        "Oacutesmall",
+        "Ocircumflexsmall",
+        "Otildesmall",
+        "Odieresissmall",
+        "OEsmall",
+        "Oslashsmall",
+        "Ugravesmall",
+        "Uacutesmall",
+        "Ucircumflexsmall",
+        "Udieresissmall",
+        "Yacutesmall",
+        "Thornsmall",
+        "Ydieresissmall",
+        "001.000",
+        "001.001",
+        "001.002",
+        "001.003",
+        "Black",
+        "Bold",
+        "Book",
+        "Light",
+        "Medium",
+        "Regular",
+        "Roman",
+        "Semibold",
     )
 
     class INDEX:
-
         def __init__(self, fp: BinaryIO) -> None:
             self.fp = fp
-            self.offsets: List[int] = []
-            (count, offsize) = struct.unpack('>HB', self.fp.read(3))
-            for i in range(count+1):
+            self.offsets: list[int] = []
+            (count, offsize) = struct.unpack(">HB", self.fp.read(3))
+            for _i in range(count + 1):
                 self.offsets.append(nunpack(self.fp.read(offsize)))
-            self.base = self.fp.tell()-1
-            self.fp.seek(self.base+self.offsets[-1])
-            return
+            self.base = self.fp.tell() - 1
+            self.fp.seek(self.base + self.offsets[-1])
 
         def __repr__(self) -> str:
-            return '<INDEX: size=%d>' % len(self)
+            return f"<INDEX: size={len(self)}>"
 
         def __len__(self) -> int:
-            return len(self.offsets)-1
+            return len(self.offsets) - 1
 
         def __getitem__(self, i: int) -> bytes:
-            self.fp.seek(self.base+self.offsets[i])
-            return self.fp.read(self.offsets[i+1]-self.offsets[i])
+            self.fp.seek(self.base + self.offsets[i])
+            return self.fp.read(self.offsets[i + 1] - self.offsets[i])
 
         def __iter__(self) -> Iterator[bytes]:
             return iter(self[i] for i in range(len(self)))
@@ -313,9 +639,8 @@ class CFFFont:
         self.name = name
         self.fp = fp
         # Header
-        (_major, _minor, hdrsize, offsize) = struct.unpack('BBBB',
-                                                           self.fp.read(4))
-        self.fp.read(hdrsize-4)
+        (_major, _minor, hdrsize, _offsize) = struct.unpack("BBBB", self.fp.read(4))
+        self.fp.read(hdrsize - 4)
         # Name INDEX
         self.name_index = self.INDEX(self.fp)
         # Top DICT INDEX
@@ -338,174 +663,213 @@ class CFFFont:
         self.gid2code = {}
         self.fp.seek(cast(int, encoding_pos))
         format = self.fp.read(1)
-        if format == b'\x00':
+        if format == b"\x00":
             # Format 0
-            (n,) = struct.unpack('B', self.fp.read(1))
-            for (code, gid) in enumerate(struct.unpack('B'*n,
-                                                       self.fp.read(n))):
+            (n,) = struct.unpack("B", self.fp.read(1))
+            for code, gid in enumerate(struct.unpack("B" * n, self.fp.read(n))):
                 self.code2gid[code] = gid
                 self.gid2code[gid] = code
-        elif format == b'\x01':
+        elif format == b"\x01":
             # Format 1
-            (n,) = struct.unpack('B', self.fp.read(1))
+            (n,) = struct.unpack("B", self.fp.read(1))
             code = 0
-            for i in range(n):
-                (first, nleft) = struct.unpack('BB', self.fp.read(2))
-                for gid in range(first, first+nleft+1):
+            for _i in range(n):
+                (first, nleft) = struct.unpack("BB", self.fp.read(2))
+                for gid in range(first, first + nleft + 1):
                     self.code2gid[code] = gid
                     self.gid2code[gid] = code
                     code += 1
         else:
-            raise ValueError('unsupported encoding format: %r' % format)
+            raise PDFValueError(f"unsupported encoding format: {format!r}")
         # Charsets
         self.name2gid = {}
         self.gid2name = {}
         self.fp.seek(cast(int, charset_pos))
         format = self.fp.read(1)
-        if format == b'\x00':
+        if format == b"\x00":
             # Format 0
-            n = self.nglyphs-1
-            for (gid, sid) in enumerate(
-                    cast(Tuple[int, ...],
-                         struct.unpack('>' + 'H' * n, self.fp.read(2 * n)))):
+            n = self.nglyphs - 1
+            for gid, sid in enumerate(
+                cast(
+                    tuple[int, ...], struct.unpack(">" + "H" * n, self.fp.read(2 * n))
+                ),
+            ):
                 gid += 1
                 sidname = self.getstr(sid)
                 self.name2gid[sidname] = gid
                 self.gid2name[gid] = sidname
-        elif format == b'\x01':
+        elif format == b"\x01":
             # Format 1
-            (n,) = struct.unpack('B', self.fp.read(1))
+            (n,) = struct.unpack("B", self.fp.read(1))
             sid = 0
-            for i in range(n):
-                (first, nleft) = struct.unpack('BB', self.fp.read(2))
-                for gid in range(first, first+nleft+1):
+            for _i in range(n):
+                (first, nleft) = struct.unpack("BB", self.fp.read(2))
+                for gid in range(first, first + nleft + 1):
                     sidname = self.getstr(sid)
                     self.name2gid[sidname] = gid
                     self.gid2name[gid] = sidname
                     sid += 1
-        elif format == b'\x02':
+        elif format == b"\x02":
             # Format 2
-            assert False, str(('Unhandled', format))
+            raise AssertionError(str(("Unhandled", format)))
         else:
-            raise ValueError('unsupported charset format: %r' % format)
-        return
+            raise PDFValueError(f"unsupported charset format: {format!r}")
 
-    def getstr(self, sid: int) -> Union[str, bytes]:
+    def getstr(self, sid: int) -> str | bytes:
         # This returns str for one of the STANDARD_STRINGS but bytes otherwise,
         # and appears to be a needless source of type complexity.
         if sid < len(self.STANDARD_STRINGS):
             return self.STANDARD_STRINGS[sid]
-        return self.string_index[sid-len(self.STANDARD_STRINGS)]
+        return self.string_index[sid - len(self.STANDARD_STRINGS)]
 
 
 class TrueTypeFont:
-
-    class CMapNotFound(Exception):
+    class CMapNotFound(PDFException):
         pass
 
     def __init__(self, name: str, fp: BinaryIO) -> None:
         self.name = name
         self.fp = fp
-        self.tables: Dict[bytes, Tuple[int, int]] = {}
+        self.tables: dict[bytes, tuple[int, int]] = {}
         self.fonttype = fp.read(4)
         try:
-            (ntables, _1, _2, _3) = cast(Tuple[int, int, int, int],
-                                         struct.unpack('>HHHH', fp.read(8)))
+            (ntables, _1, _2, _3) = struct.unpack(">HHHH", fp.read(8))
             for _ in range(ntables):
-                (name_bytes, tsum, offset, length) = \
-                    cast(Tuple[bytes, int, int, int],
-                         struct.unpack('>4sLLL', fp.read(16)))
+                (name_bytes, _tsum, offset, length) = struct.unpack(
+                    ">4sLLL", fp.read(16)
+                )
                 self.tables[name_bytes] = (offset, length)
         except struct.error:
             # Do not fail if there are not enough bytes to read. Even for
             # corrupted PDFs we would like to get as much information as
             # possible, so continue.
             pass
-        return
 
     def create_unicode_map(self) -> FileUnicodeMap:
-        if b'cmap' not in self.tables:
+        if b"cmap" not in self.tables:
             raise TrueTypeFont.CMapNotFound
-        (base_offset, length) = self.tables[b'cmap']
+        (base_offset, _length) = self.tables[b"cmap"]
         fp = self.fp
         fp.seek(base_offset)
-        (version, nsubtables) = \
-            cast(Tuple[int, int], struct.unpack('>HH', fp.read(4)))
-        subtables: List[Tuple[int, int, int]] = []
-        for i in range(nsubtables):
-            subtables.append(
-                cast(Tuple[int, int, int], struct.unpack('>HHL', fp.read(8))))
-        char2gid: Dict[int, int] = {}
-        # Only supports subtable type 0, 2 and 4.
-        for (_1, _2, st_offset) in subtables:
-            fp.seek(base_offset+st_offset)
-            (fmttype, fmtlen, fmtlang) = \
-                cast(Tuple[int, int, int], struct.unpack('>HHH', fp.read(6)))
+        (_version, nsubtables) = cast(tuple[int, int], struct.unpack(">HH", fp.read(4)))
+        subtables: list[tuple[int, int, int]] = []
+        for _i in range(nsubtables):
+            subtables.append(struct.unpack(">HHL", fp.read(8)))
+        char2gid: dict[int, int] = {}
+        # Supports subtable type 0, 2, 4, 6, 10 and 12.
+        for platform_id, encoding_id, st_offset in subtables:
+            # Skip non-Unicode cmaps.
+            # https://docs.microsoft.com/en-us/typography/opentype/spec/cmap
+            if not (platform_id == 0 or (platform_id == 3 and encoding_id in [1, 10])):
+                continue
+            fp.seek(base_offset + st_offset)
+            (fmttype,) = struct.unpack(">H", fp.read(2))
             if fmttype == 0:
-                char2gid.update(enumerate(
-                    cast(Tuple[int, ...],
-                         struct.unpack('>256B', fp.read(256)))))
+                self.parse_cmap_format_0(fp, char2gid)
             elif fmttype == 2:
-                subheaderkeys = cast(Tuple[int, ...],
-                                     struct.unpack('>256H', fp.read(512)))
-                firstbytes = [0]*8192
-                for (i, k) in enumerate(subheaderkeys):
-                    firstbytes[k//8] = i
-                nhdrs = max(subheaderkeys)//8 + 1
-                hdrs: List[Tuple[int, int, int, int, int]] = []
-                for i in range(nhdrs):
-                    (firstcode, entcount, delta, offset) = \
-                        cast(Tuple[int, int, int, int],
-                             struct.unpack('>HHhH', fp.read(8)))
-                    hdrs.append((i, firstcode, entcount, delta,
-                                 fp.tell()-2+offset))
-                for (i, firstcode, entcount, delta, pos) in hdrs:
-                    if not entcount:
-                        continue
-                    first = firstcode + (firstbytes[i] << 8)
-                    fp.seek(pos)
-                    for c in range(entcount):
-                        gid = cast(Tuple[int],
-                                   struct.unpack('>H', fp.read(2)))[0]
-                        if gid:
-                            gid += delta
-                        char2gid[first+c] = gid
+                self.parse_cmap_format_2(fp, char2gid)
             elif fmttype == 4:
-                (segcount, _1, _2, _3) = \
-                    cast(Tuple[int, int, int, int],
-                         struct.unpack('>HHHH', fp.read(8)))
-                segcount //= 2
-                ecs = cast(Tuple[int, ...],
-                           struct.unpack('>%dH' % segcount,
-                                         fp.read(2*segcount)))
-                fp.read(2)
-                scs = cast(Tuple[int, ...],
-                           struct.unpack('>%dH' % segcount,
-                                         fp.read(2*segcount)))
-                idds = cast(Tuple[int, ...],
-                            struct.unpack('>%dh' % segcount,
-                                          fp.read(2*segcount)))
-                pos = fp.tell()
-                idrs = cast(Tuple[int, ...],
-                            struct.unpack('>%dH' % segcount,
-                                          fp.read(2*segcount)))
-                for (ec, sc, idd, idr) in zip(ecs, scs, idds, idrs):
-                    if idr:
-                        fp.seek(pos+idr)
-                        for c in range(sc, ec+1):
-                            b = cast(Tuple[int],
-                                     struct.unpack('>H', fp.read(2)))[0]
-                            char2gid[c] = (b + idd) & 0xffff
-                    else:
-                        for c in range(sc, ec+1):
-                            char2gid[c] = (c + idd) & 0xffff
+                self.parse_cmap_format_4(fp, char2gid)
+            elif fmttype == 6:
+                self.parse_cmap_format_6(fp, char2gid)
+            elif fmttype == 10:
+                self.parse_cmap_format_10(fp, char2gid)
+            elif fmttype == 12:
+                self.parse_cmap_format_12(fp, char2gid)
             else:
-                assert False, str(('Unhandled', fmttype))
+                raise AssertionError(str(("Unhandled", fmttype)))
+        if not char2gid:
+            raise TrueTypeFont.CMapNotFound
         # create unicode map
         unicode_map = FileUnicodeMap()
-        for (char, gid) in char2gid.items():
+        for char, gid in char2gid.items():
             unicode_map.add_cid2unichr(gid, char)
         return unicode_map
+
+    def parse_cmap_format_0(self, fp: BinaryIO, char2gid: dict[int, int]) -> None:
+        """Parse cmap subtable format 0"""
+        fmtlen, fmtlang = struct.unpack(">HH", fp.read(4))
+        log.debug("parse_cmap_format: fmtlen=%s, fmtlang=%s", fmtlen, fmtlang)
+        char2gid.update(enumerate(struct.unpack(">256B", fp.read(256))))
+
+    def parse_cmap_format_2(self, fp: BinaryIO, char2gid: dict[int, int]) -> None:
+        """Parse cmap subtable format 2"""
+        fmtlen, fmtlang = struct.unpack(">HH", fp.read(4))
+        log.debug("parse_cmap_format: fmtlen=%s, fmtlang=%s", fmtlen, fmtlang)
+        subheaderkeys = struct.unpack(">256H", fp.read(512))
+        firstbytes = [0] * 8192
+        for i, k in enumerate(subheaderkeys):
+            firstbytes[k // 8] = i
+        nhdrs = max(subheaderkeys) // 8 + 1
+        hdrs: list[tuple[int, int, int, int, int]] = []
+        for i in range(nhdrs):
+            (firstcode, entcount, delta, offset) = struct.unpack(">HHhH", fp.read(8))
+            hdrs.append((i, firstcode, entcount, delta, fp.tell() - 2 + offset))
+        for i, firstcode, entcount, delta, pos in hdrs:
+            if not entcount:
+                continue
+            first = firstcode + (firstbytes[i] << 8)
+            fp.seek(pos)
+            for c in range(entcount):
+                gid = struct.unpack(">H", fp.read(2))[0]
+                if gid:
+                    gid += delta
+                char2gid[first + c] = gid
+
+    def parse_cmap_format_4(self, fp: BinaryIO, char2gid: dict[int, int]) -> None:
+        """Parse cmap subtable format 4"""
+        fmtlen, fmtlang = struct.unpack(">HH", fp.read(4))
+        log.debug("parse_cmap_format: fmtlen=%s, fmtlang=%s", fmtlen, fmtlang)
+        (segcount, _1, _2, _3) = struct.unpack(">HHHH", fp.read(8))
+        segcount //= 2
+        ecs = struct.unpack(f">{segcount}H", fp.read(2 * segcount))
+        fp.read(2)
+        scs = struct.unpack(f">{segcount}H", fp.read(2 * segcount))
+        idds = struct.unpack(f">{segcount}h", fp.read(2 * segcount))
+        pos = fp.tell()
+        idrs = struct.unpack(f">{segcount}H", fp.read(2 * segcount))
+        for ec, sc, idd, idr in zip(ecs, scs, idds, idrs, strict=False):
+            if idr:
+                fp.seek(pos + idr)
+                for c in range(sc, ec + 1):
+                    b = struct.unpack(">H", fp.read(2))[0]
+                    char2gid[c] = (b + idd) & 0xFFFF
+            else:
+                for c in range(sc, ec + 1):
+                    char2gid[c] = (c + idd) & 0xFFFF
+
+    def parse_cmap_format_6(self, fp: BinaryIO, char2gid: dict[int, int]) -> None:
+        """Parse cmap subtable format 6"""
+        fmtlen, fmtlang = struct.unpack(">HH", fp.read(4))
+        log.debug("parse_cmap_format: fmtlen=%s, fmtlang=%s", fmtlen, fmtlang)
+        firstcode, entcount = struct.unpack(">HH", fp.read(4))
+        gids = struct.unpack(f">{entcount}H", fp.read(2 * entcount))
+        for i in range(entcount):
+            char2gid[firstcode + i] = gids[i]
+
+    def parse_cmap_format_10(self, fp: BinaryIO, char2gid: dict[int, int]) -> None:
+        """Parse cmap subtable format 10"""
+        rsv, fmtlen, fmtlang = struct.unpack(">HII", fp.read(10))
+        log.debug(
+            "parse_cmap_format: rsv=%s, fmtlen=%s, fmtlang=%s", rsv, fmtlen, fmtlang
+        )
+        startcode, numchars = struct.unpack(">II", fp.read(8))
+        gids = struct.unpack(f">{numchars}H", fp.read(2 * numchars))
+        for i in range(numchars):
+            char2gid[startcode + i] = gids[i]
+
+    def parse_cmap_format_12(self, fp: BinaryIO, char2gid: dict[int, int]) -> None:
+        """Parse cmap subtable format 12"""
+        rsv, fmtlen, fmtlang = struct.unpack(">HII", fp.read(10))
+        log.debug(
+            "parse_cmap_format: rsv=%s, fmtlen=%s, fmtlang=%s", rsv, fmtlen, fmtlang
+        )
+        numgroups = struct.unpack(">I", fp.read(4))[0]
+        for _i in range(numgroups):
+            sc, ec, sgid = struct.unpack(">III", fp.read(12))
+            for code in range(sc, ec + 1):
+                char2gid[code] = sgid
+                sgid += 1
 
 
 class PDFFontError(PDFException):
@@ -516,39 +880,38 @@ class PDFUnicodeNotDefined(PDFFontError):
     pass
 
 
-LITERAL_STANDARD_ENCODING = LIT('StandardEncoding')
-LITERAL_TYPE1C = LIT('Type1C')
+LITERAL_STANDARD_ENCODING = LIT("StandardEncoding")
+LITERAL_TYPE1C = LIT("Type1C")
 
 # Font widths are maintained in a dict type that maps from *either* unicode
 # chars or integer character IDs.
-FontWidthDict = Union[Dict[int, float], Dict[str, float]]
+FontWidthDict = dict[int | str, float]
 
 
 class PDFFont:
-
     def __init__(
         self,
         descriptor: Mapping[str, Any],
         widths: FontWidthDict,
-        default_width: Optional[float] = None
+        default_width: float | None = None,
     ) -> None:
         self.descriptor = descriptor
         self.widths: FontWidthDict = resolve_all(widths)
-        self.fontname = resolve1(descriptor.get('FontName', 'unknown'))
+        self.fontname = resolve1(descriptor.get("FontName", "unknown"))
         if isinstance(self.fontname, PSLiteral):
             self.fontname = literal_name(self.fontname)
-        self.flags = int_value(descriptor.get('Flags', 0))
-        self.ascent = num_value(descriptor.get('Ascent', 0))
-        self.descent = num_value(descriptor.get('Descent', 0))
-        self.italic_angle = num_value(descriptor.get('ItalicAngle', 0))
+        self.flags = int_value(descriptor.get("Flags", 0))
+        self.ascent = num_value(descriptor.get("Ascent", 0))
+        self.descent = num_value(descriptor.get("Descent", 0))
+        self.italic_angle = num_value(descriptor.get("ItalicAngle", 0))
         if default_width is None:
-            self.default_width = num_value(descriptor.get('MissingWidth', 0))
+            self.default_width = num_value(descriptor.get("MissingWidth", 0))
         else:
             self.default_width = default_width
-        self.leading = num_value(descriptor.get('Leading', 0))
-        self.bbox = cast(Rect, list_value(
-            resolve_all(descriptor.get('FontBBox', (0, 0, 0, 0)))))
-        self.hscale = self.vscale = .001
+        self.default_width = resolve1(self.default_width)
+        self.leading = num_value(descriptor.get("Leading", 0))
+        self.bbox = self._parse_bbox(descriptor)
+        self.hscale = self.vscale = 0.001
 
         # PDF RM 9.8.1 specifies /Descent should always be a negative number.
         # PScript5.dll seems to produce Descent with a positive number, but
@@ -556,10 +919,9 @@ class PDFFont:
         # descent to negative.
         if self.descent > 0:
             self.descent = -self.descent
-        return
 
     def __repr__(self) -> str:
-        return '<PDFFont>'
+        return "<PDFFont>"
 
     def is_vertical(self) -> bool:
         return False
@@ -579,13 +941,13 @@ class PDFFont:
         return self.descent * self.vscale
 
     def get_width(self) -> float:
-        w = self.bbox[2]-self.bbox[0]
+        w = self.bbox[2] - self.bbox[0]
         if w == 0:
             w = -self.default_width
         return w * self.hscale
 
     def get_height(self) -> float:
-        h = self.bbox[3]-self.bbox[1]
+        h = self.bbox[3] - self.bbox[1]
         if h == 0:
             h = self.ascent - self.descent
         return h * self.vscale
@@ -593,20 +955,23 @@ class PDFFont:
     def char_width(self, cid: int) -> float:
         # Because character widths may be mapping either IDs or strings,
         # we try to lookup the character ID first, then its str equivalent.
-        try:
-            return cast(Dict[int, float], self.widths)[cid] * self.hscale
-        except KeyError:
-            str_widths = cast(Dict[str, float], self.widths)
-            try:
-                return str_widths[self.to_unichr(cid)] * self.hscale
-            except (KeyError, PDFUnicodeNotDefined):
-                return self.default_width * self.hscale
+        cid_width = safe_float(self.widths.get(cid))
+        if cid_width is not None:
+            return cid_width * self.hscale
 
-    def char_disp(
-        self,
-        cid: int
-    ) -> Union[float, Tuple[Optional[float], float]]:
-        "Returns an integer for horizontal fonts, a tuple for vertical fonts."
+        try:
+            str_cid = self.to_unichr(cid)
+            cid_width = safe_float(self.widths.get(str_cid))
+            if cid_width is not None:
+                return cid_width * self.hscale
+
+        except PDFUnicodeNotDefined:
+            pass
+
+        return self.default_width * self.hscale
+
+    def char_disp(self, cid: int) -> float | tuple[float | None, float]:
+        """Returns an integer for horizontal fonts, a tuple for vertical fonts."""
         return 0
 
     def string_width(self, s: bytes) -> float:
@@ -615,36 +980,54 @@ class PDFFont:
     def to_unichr(self, cid: int) -> str:
         raise NotImplementedError
 
+    @staticmethod
+    def _parse_bbox(descriptor: Mapping[str, Any]) -> Rect:
+        """Parse FontBBox from the fonts descriptor"""
+        font_bbox = resolve_all(descriptor.get("FontBBox"))
+        bbox = safe_rect_list(font_bbox)
+        if bbox is None:
+            log.warning(
+                "Could not get FontBBox from font descriptor because "
+                "%r cannot be parsed as 4 floats",
+                font_bbox,
+            )
+            return 0.0, 0.0, 0.0, 0.0
+        return bbox
+
 
 class PDFSimpleFont(PDFFont):
-
     def __init__(
         self,
         descriptor: Mapping[str, Any],
         widths: FontWidthDict,
-        spec: Mapping[str, Any]
+        spec: Mapping[str, Any],
     ) -> None:
         # Font encoding is specified either by a name of
         # built-in encoding or a dictionary that describes
         # the differences.
-        if 'Encoding' in spec:
-            encoding = resolve1(spec['Encoding'])
-        else:
-            encoding = LITERAL_STANDARD_ENCODING
+
+        default_encoding = LITERAL_STANDARD_ENCODING
+        if literal_name(spec.get("Subtype")) == "TrueType":
+            # PDF spec: TrueType fonts without Encoding default to WinAnsiEncoding
+            default_encoding = LIT("WinAnsiEncoding")
+
+        encoding = default_encoding
+        if "Encoding" in spec:
+            encoding = resolve1(spec["Encoding"])
+
         if isinstance(encoding, dict):
-            name = literal_name(encoding.get('BaseEncoding',
-                                             LITERAL_STANDARD_ENCODING))
-            diff = list_value(encoding.get('Differences', []))
+            name = literal_name(encoding.get("BaseEncoding", default_encoding))
+            diff = list_value(encoding.get("Differences", []))
             self.cid2unicode = EncodingDB.get_encoding(name, diff)
         else:
             self.cid2unicode = EncodingDB.get_encoding(literal_name(encoding))
-        self.unicode_map: Optional[UnicodeMap] = None
-        if 'ToUnicode' in spec:
-            strm = stream_value(spec['ToUnicode'])
+
+        self.unicode_map: UnicodeMap | None = None
+        if "ToUnicode" in spec:
+            strm = stream_value(spec["ToUnicode"])
             self.unicode_map = FileUnicodeMap()
             CMapParser(self.unicode_map, BytesIO(strm.get_data())).run()
         PDFFont.__init__(self, descriptor, widths)
-        return
 
     def to_unichr(self, cid: int) -> str:
         if self.unicode_map:
@@ -654,164 +1037,149 @@ class PDFSimpleFont(PDFFont):
                 pass
         try:
             return self.cid2unicode[cid]
-        except KeyError:
-            raise PDFUnicodeNotDefined(None, cid)
+        except KeyError as err:
+            raise PDFUnicodeNotDefined(None, cid) from err
 
 
 class PDFType1Font(PDFSimpleFont):
-
-    def __init__(
-        self,
-        rsrcmgr: "PDFResourceManager",
-        spec: Mapping[str, Any]
-    ) -> None:
+    def __init__(self, rsrcmgr: "PDFResourceManager", spec: Mapping[str, Any]) -> None:
         try:
-            self.basefont = literal_name(spec['BaseFont'])
+            self.basefont = literal_name(spec["BaseFont"])
         except KeyError:
             if settings.STRICT:
-                raise PDFFontError('BaseFont is missing')
-            self.basefont = 'unknown'
+                raise PDFFontError("BaseFont is missing") from None
+            self.basefont = "unknown"
 
         widths: FontWidthDict
         try:
             (descriptor, int_widths) = FontMetricsDB.get_metrics(self.basefont)
-            widths = cast(Dict[str, float], int_widths)  # implicit int->float
+            widths = cast(dict[str | int, float], int_widths)  # implicit int->float
         except KeyError:
-            descriptor = dict_value(spec.get('FontDescriptor', {}))
-            firstchar = int_value(spec.get('FirstChar', 0))
+            descriptor = dict_value(spec.get("FontDescriptor", {}))
+            firstchar = int_value(spec.get("FirstChar", 0))
             # lastchar = int_value(spec.get('LastChar', 255))
-            width_list = list_value(spec.get('Widths', [0]*256))
-            widths = {i+firstchar: w for (i, w) in enumerate(width_list)}
+            width_list = list_value(spec.get("Widths", [0] * 256))
+            widths = {i + firstchar: resolve1(w) for (i, w) in enumerate(width_list)}
         PDFSimpleFont.__init__(self, descriptor, widths, spec)
-        if 'Encoding' not in spec and 'FontFile' in descriptor:
+        if "Encoding" not in spec and "FontFile" in descriptor:
             # try to recover the missing encoding info from the font file.
-            self.fontfile = stream_value(descriptor.get('FontFile'))
-            length1 = int_value(self.fontfile['Length1'])
+            self.fontfile = stream_value(descriptor.get("FontFile"))
+            length1 = int_value(self.fontfile["Length1"])
             data = self.fontfile.get_data()[:length1]
             parser = Type1FontHeaderParser(BytesIO(data))
             self.cid2unicode = parser.get_encoding()
-        return
 
     def __repr__(self) -> str:
-        return '<PDFType1Font: basefont=%r>' % self.basefont
+        return f"<PDFType1Font: basefont={self.basefont!r}>"
 
 
 class PDFTrueTypeFont(PDFType1Font):
-
     def __repr__(self) -> str:
-        return '<PDFTrueTypeFont: basefont=%r>' % self.basefont
+        return f"<PDFTrueTypeFont: basefont={self.basefont!r}>"
 
 
 class PDFType3Font(PDFSimpleFont):
-
-    def __init__(
-        self,
-        rsrcmgr: "PDFResourceManager",
-        spec: Mapping[str, Any]
-    ) -> None:
-        firstchar = int_value(spec.get('FirstChar', 0))
+    def __init__(self, rsrcmgr: "PDFResourceManager", spec: Mapping[str, Any]) -> None:
+        firstchar = int_value(spec.get("FirstChar", 0))
         # lastchar = int_value(spec.get('LastChar', 0))
-        width_list = list_value(spec.get('Widths', [0]*256))
-        widths = {i+firstchar: w for (i, w) in enumerate(width_list)}
-        if 'FontDescriptor' in spec:
-            descriptor = dict_value(spec['FontDescriptor'])
+        width_list = list_value(spec.get("Widths", [0] * 256))
+        widths: dict[str | int, float] = {
+            i + firstchar: w for (i, w) in enumerate(width_list)
+        }
+        if "FontDescriptor" in spec:
+            descriptor = dict_value(spec["FontDescriptor"])
         else:
-            descriptor = {'Ascent': 0, 'Descent': 0,
-                          'FontBBox': spec['FontBBox']}
+            descriptor = {"Ascent": 0, "Descent": 0, "FontBBox": spec["FontBBox"]}
         PDFSimpleFont.__init__(self, descriptor, widths, spec)
-        self.matrix = cast(Matrix, tuple(list_value(spec.get('FontMatrix'))))
+        self.matrix = cast(Matrix, tuple(list_value(spec.get("FontMatrix"))))
         (_, self.descent, _, self.ascent) = self.bbox
         (self.hscale, self.vscale) = apply_matrix_norm(self.matrix, (1, 1))
-        return
 
     def __repr__(self) -> str:
-        return '<PDFType3Font>'
+        return "<PDFType3Font>"
 
 
 class PDFCIDFont(PDFFont):
-    default_disp: Union[float, Tuple[Optional[float], float]]
+    default_disp: float | tuple[float | None, float]
 
     def __init__(
         self,
         rsrcmgr: "PDFResourceManager",
         spec: Mapping[str, Any],
-        strict: bool = settings.STRICT
+        strict: bool = settings.STRICT,
     ) -> None:
         try:
-            self.basefont = literal_name(spec['BaseFont'])
+            self.basefont = literal_name(spec["BaseFont"])
         except KeyError:
             if strict:
-                raise PDFFontError('BaseFont is missing')
-            self.basefont = 'unknown'
-        self.cidsysteminfo = dict_value(spec.get('CIDSystemInfo', {}))
-        cid_registry = resolve1(
-            self.cidsysteminfo.get('Registry', b'unknown')).decode("latin1")
-        cid_ordering = resolve1(
-            self.cidsysteminfo.get('Ordering', b'unknown')).decode("latin1")
-        self.cidcoding = '{}-{}'.format(cid_registry, cid_ordering)
+                raise PDFFontError("BaseFont is missing") from None
+            self.basefont = "unknown"
+        self.cidsysteminfo = dict_value(spec.get("CIDSystemInfo", {}))
+        cid_registry = resolve1(self.cidsysteminfo.get("Registry", b"unknown")).decode(
+            "latin1",
+        )
+        cid_ordering = resolve1(self.cidsysteminfo.get("Ordering", b"unknown")).decode(
+            "latin1",
+        )
+        self.cidcoding = f"{cid_registry.strip()}-{cid_ordering.strip()}"
         self.cmap: CMapBase = self.get_cmap_from_spec(spec, strict)
 
         try:
-            descriptor = dict_value(spec['FontDescriptor'])
+            descriptor = dict_value(spec["FontDescriptor"])
         except KeyError:
             if strict:
-                raise PDFFontError('FontDescriptor is missing')
+                raise PDFFontError("FontDescriptor is missing") from None
             descriptor = {}
         ttf = None
-        if 'FontFile2' in descriptor:
-            self.fontfile = stream_value(descriptor.get('FontFile2'))
-            ttf = TrueTypeFont(self.basefont,
-                               BytesIO(self.fontfile.get_data()))
-        self.unicode_map: Optional[UnicodeMap] = None
-        if 'ToUnicode' in spec:
-            if isinstance(spec['ToUnicode'], PDFStream):
-                strm = stream_value(spec['ToUnicode'])
+        if "FontFile2" in descriptor:
+            self.fontfile = stream_value(descriptor.get("FontFile2"))
+            ttf = TrueTypeFont(self.basefont, BytesIO(self.fontfile.get_data()))
+        self.unicode_map: UnicodeMap | None = None
+        if "ToUnicode" in spec:
+            if isinstance(spec["ToUnicode"], PDFStream):
+                strm = stream_value(spec["ToUnicode"])
                 self.unicode_map = FileUnicodeMap()
                 CMapParser(self.unicode_map, BytesIO(strm.get_data())).run()
             else:
-                cmap_name = literal_name(spec['ToUnicode'])
-                encoding = literal_name(spec['Encoding'])
-                if 'Identity' in cid_ordering \
-                        or 'Identity' in cmap_name \
-                        or 'Identity' in encoding:
+                cmap_name = literal_name(spec["ToUnicode"])
+                encoding = literal_name(spec["Encoding"])
+                if (
+                    "Identity" in cid_ordering
+                    or "Identity" in cmap_name
+                    or "Identity" in encoding
+                ):
                     self.unicode_map = IdentityUnicodeMap()
-        elif self.cidcoding in ('Adobe-Identity', 'Adobe-UCS'):
+        elif self.cidcoding in ("Adobe-Identity", "Adobe-UCS"):
             if ttf:
-                try:
+                with contextlib.suppress(TrueTypeFont.CMapNotFound):
                     self.unicode_map = ttf.create_unicode_map()
-                except TrueTypeFont.CMapNotFound:
-                    pass
         else:
-            try:
+            with contextlib.suppress(CMapDB.CMapNotFound):
                 self.unicode_map = CMapDB.get_unicode_map(
-                    self.cidcoding, self.cmap.is_vertical())
-            except CMapDB.CMapNotFound:
-                pass
+                    self.cidcoding,
+                    self.cmap.is_vertical(),
+                )
 
         self.vertical = self.cmap.is_vertical()
         if self.vertical:
             # writing mode: vertical
-            widths2 = get_widths2(list_value(spec.get('W2', [])))
-            self.disps = {cid: (vx, vy)
-                          for (cid, (_, (vx, vy))) in widths2.items()}
-            (vy, w) = resolve1(spec.get('DW2', [880, -1000]))
+            widths2 = get_widths2(list_value(spec.get("W2", [])))
+            self.disps = {cid: (vx, vy) for (cid, (_, (vx, vy))) in widths2.items()}
+            (vy, w) = resolve1(spec.get("DW2", [880, -1000]))
             self.default_disp = (None, vy)
-            widths = {cid: w for (cid, (w, _)) in widths2.items()}
+            widths: dict[str | int, float] = {
+                cid: w for (cid, (w, _)) in widths2.items()
+            }
             default_width = w
         else:
             # writing mode: horizontal
             self.disps = {}
             self.default_disp = 0
-            widths = get_widths(list_value(spec.get('W', [])))
-            default_width = spec.get('DW', 1000)
+            widths = get_widths(list_value(spec.get("W", [])))
+            default_width = spec.get("DW", 1000)
         PDFFont.__init__(self, descriptor, widths, default_width=default_width)
-        return
 
-    def get_cmap_from_spec(
-        self,
-        spec: Mapping[str, Any],
-        strict: bool
-    ) -> CMapBase:
+    def get_cmap_from_spec(self, spec: Mapping[str, Any], strict: bool) -> CMapBase:
         """Get cmap from font specification
 
         For certain PDFs, Encoding Type isn't mentioned as an attribute of
@@ -826,37 +1194,35 @@ class PDFCIDFont(PDFFont):
             return CMapDB.get_cmap(cmap_name)
         except CMapDB.CMapNotFound as e:
             if strict:
-                raise PDFFontError(e)
+                raise PDFFontError(e) from e
             return CMap()
 
     @staticmethod
     def _get_cmap_name(spec: Mapping[str, Any], strict: bool) -> str:
         """Get cmap name from font specification"""
-        cmap_name = 'unknown'  # default value
+        cmap_name = "unknown"  # default value
 
         try:
-            spec_encoding = spec['Encoding']
-            if hasattr(spec_encoding, 'name'):
-                cmap_name = literal_name(spec['Encoding'])
+            spec_encoding = spec["Encoding"]
+            if hasattr(spec_encoding, "name"):
+                cmap_name = literal_name(spec["Encoding"])
             else:
-                cmap_name = literal_name(spec_encoding['CMapName'])
+                cmap_name = literal_name(spec_encoding["CMapName"])
         except KeyError:
             if strict:
-                raise PDFFontError('Encoding is unspecified')
+                raise PDFFontError("Encoding is unspecified") from None
 
         if type(cmap_name) is PDFStream:  # type: ignore[comparison-overlap]
             cmap_name_stream: PDFStream = cast(PDFStream, cmap_name)
-            if 'CMapName' in cmap_name_stream:
-                cmap_name = cmap_name_stream.get('CMapName').name
-            else:
-                if strict:
-                    raise PDFFontError('CMapName unspecified for encoding')
+            if "CMapName" in cmap_name_stream:
+                cmap_name = cmap_name_stream.get("CMapName").name
+            elif strict:
+                raise PDFFontError("CMapName unspecified for encoding")
 
         return IDENTITY_ENCODER.get(cmap_name, cmap_name)
 
     def __repr__(self) -> str:
-        return '<PDFCIDFont: basefont={!r}, cidcoding={!r}>'\
-            .format(self.basefont, self.cidcoding)
+        return f"<PDFCIDFont: basefont={self.basefont!r}, cidcoding={self.cidcoding!r}>"
 
     def is_vertical(self) -> bool:
         return self.vertical
@@ -867,30 +1233,14 @@ class PDFCIDFont(PDFFont):
     def decode(self, bytes: bytes) -> Iterable[int]:
         return self.cmap.decode(bytes)
 
-    def char_disp(
-        self,
-        cid: int
-    ) -> Union[float, Tuple[Optional[float], float]]:
-        "Returns an integer for horizontal fonts, a tuple for vertical fonts."
+    def char_disp(self, cid: int) -> float | tuple[float | None, float]:
+        """Returns an integer for horizontal fonts, a tuple for vertical fonts."""
         return self.disps.get(cid, self.default_disp)
 
     def to_unichr(self, cid: int) -> str:
         try:
             if not self.unicode_map:
-                raise KeyError(cid)
+                raise PDFKeyError(cid)
             return self.unicode_map.get_unichr(cid)
-        except KeyError:
-            raise PDFUnicodeNotDefined(self.cidcoding, cid)
-
-
-def main(argv: List[str]) -> None:
-    for fname in argv[1:]:
-        fp = open(fname, 'rb')
-        font = CFFFont(fname, fp)
-        print(font)
-        fp.close()
-    return
-
-
-if __name__ == '__main__':
-    main(sys.argv)
+        except KeyError as err:
+            raise PDFUnicodeNotDefined(self.cidcoding, cid) from err

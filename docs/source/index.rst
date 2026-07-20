@@ -26,7 +26,7 @@ This documentation is organized into four sections (according to the `Diátaxis
 documentation framework <https://diataxis.fr>`_). The
 :ref:`tutorial` section helps you setup and use pdfminer.six for the first
 time. Read this section if this is your first time working with pdfminer.six.
-The :ref:`howto` offers specific recipies for solving common problems.
+The :ref:`howto` offers specific recipes for solving common problems.
 Take a look at the :ref:`topic` if you want more background information on
 how pdfminer.six works internally. The :ref:`reference` provides
 detailed api documentation for all the common classes and functions in
@@ -59,11 +59,31 @@ Features
 Installation instructions
 =========================
 
-Before using it, you must install it using Python 3.6 or newer.
+* Install Python 3.10 or newer.
+* Install pdfminer.six.
 
 ::
+    $ pip install pdfminer.six`
 
-    $ pip install pdfminer.six
+* (Optionally) install extra dependencies for extracting images.
+
+::
+    $ pip install 'pdfminer.six[image]'`
+
+* Use the command-line interface to extract text from pdf.
+
+::
+    $ pdf2txt.py example.pdf`
+
+* Or use it with Python.
+
+.. code-block:: python
+
+    from pdfminer.high_level import extract_text
+
+    text = extract_text("example.pdf")
+    print(text)
+
 
 
 Contributing
